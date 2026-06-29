@@ -1,132 +1,145 @@
 """
-SQLite データベース管理モジュール
+セッションベースのインメモリDB（Streamlit Cloud対応）
 """
-import sqlite3
-from contextlib import contextmanager
+import streamlit as st
 from datetime import datetime
 
-DB_PATH = "anken.db"
-
-@contextmanager
-def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    try:
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
-
 def init_db():
-    with get_conn() as conn:
-        c = conn.cursor()
-        c.execute("""CREATE TABLE IF NOT EXISTS ankens (
-            anken_id TEXT PRIMARY KEY, anken_name TEXT, customer_name TEXT,
-            product_name TEXT, spec_no TEXT, drawing_no TEXT, quantity INTEGER,
-            desired_delivery TEXT, sales_rep TEXT, registered_date TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS spec_extracts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, anken_id TEXT,
-            item TEXT, value TEXT, note TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS quotation_requests (
-            mq_no TEXT PRIMARY KEY, anken_id TEXT, request_date TEXT, note TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS quotation_responses (
-            mr_no TEXT PRIMARY KEY, anken_id TEXT, amount INTEGER DEFAULT 0,
-            delivery TEXT, response_date TEXT, material_cost INTEGER DEFAULT 0, note TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS purchase_orders (
-            po_no TEXT PRIMARY KEY, anken_id TEXT, customer_po_no TEXT,
-            quantity INTEGER DEFAULT 0, unit_price INTEGER DEFAULT 0,
-            total INTEGER DEFAULT 0, delivery TEXT, received_date TEXT, note TEXT)""")
-        c.execute("""CREATE TABLE IF NOT EXISTS manufacturing_orders (
-            mo_no TEXT PRIMARY KEY, anken_id TEXT, issued_date TEXT, status TEXT)""")
+    if "db_initialized" not in st.session_state:
+        st.session_state.ankens = {}
+        st.session_state.spec_extracts = []
+        st.session_state.quotation_requests = {}
+        st.session_state.quotation_responses = {}
+        st.session_state.purchase_orders = {}
+        st.session_state.manufacturing_orders = {}
+        st.session_state.db_initialized = True
+        _load_sample_data()
 
-def insert_anken(d):
-    with get_conn() as conn:
-        conn.execute("""INSERT INTO ankens VALUES
-            (:anken_id, :anken_name, :customer_name, :product_name, :spec_no,
-             :drawing_no, :quantity, :desired_delivery, :sales_rep, :registered_date)""", d)
+def _load_sample_data():
+    # ANK-2026-0001: 三菱電機（製作指令発効済）
+    insert_anken({
+        "anken_id": "ANK-2026-0001",
+        "anken_name": "E10向け3レベルCI用フィルタコンデンサ",
+        "customer_name": "三菱電機株式会社",
+        "product_name": "ヒューズ機能付き乾式DCフィルタコンデンサ",
+        "spec_no": "IKO-A71517-A",
+        "drawing_no": "H7V1657001",
+        "quantity": 100,
+        "desired_delivery": "2026-09-30",
+        "sales_rep": "和田 孝雄",
+        "registered_date": "2026-06-01",
+    })
+    for item, val, note in [
+        ("仕様書番号", "IKO-A71517-A", "改定A、2026-02-05"),
+        ("静電容量", "2000µF -5/+5% x 4回路", ""),
+        ("定格電圧 UNDC", "1650V DC", ""),
+        ("定格電流", "297Arms / 4000µF @70℃", ""),
+        ("製品保証期間", "納入後 2年", ""),
+        ("設計保証期間", "納入後 5年", ""),
+        ("製品寿命", "20年 / 126,000時間 @平均45℃", ""),
+        ("適用規格", "IEC61881-1, IEC60077-1, IEC61287-1", ""),
+    ]:
+        insert_spec_extract("ANK-2026-0001", item, val, note)
+    insert_quotation_request({"mq_no": "MQ-2026-0001", "anken_id": "ANK-2026-0001", "request_date": "2026-06-02", "note": "初回見積依頼"})
+    insert_quotation_response({"mr_no": "MR-2026-0001", "anken_id": "ANK-2026-0001", "amount": 48000000, "delivery": "2026-09-25", "response_date": "2026-06-15", "material_cost": 32000000, "note": "IEC61881-1準拠"})
+    insert_purchase_order({"po_no": "PO-2026-0001", "anken_id": "ANK-2026-0001", "customer_po_no": "MEL-PO-2026-3345", "quantity": 100, "unit_price": 480000, "total": 48000000, "delivery": "2026-09-30", "received_date": "2026-07-01", "note": "EDI受領"})
+    insert_manufacturing_order({"mo_no": "MO-2026-0001", "anken_id": "ANK-2026-0001", "issued_date": "2026-07-02", "status": "発効"})
 
-def get_all_ankens():
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM ankens ORDER BY anken_id").fetchall()]
+    # ANK-2026-0002: 東芝（見積回答済）
+    insert_anken({
+        "anken_id": "ANK-2026-0002",
+        "anken_name": "AF盤向け力率改善コンデンサ",
+        "customer_name": "東芝インフラシステムズ",
+        "product_name": "AF用コンデンサ",
+        "spec_no": "TAF-2026-015",
+        "drawing_no": "H7V2001005",
+        "quantity": 50,
+        "desired_delivery": "2026-10-15",
+        "sales_rep": "赤星 貢",
+        "registered_date": "2026-06-05",
+    })
+    insert_spec_extract("ANK-2026-0002", "仕様書番号", "TAF-2026-015", "")
+    insert_spec_extract("ANK-2026-0002", "静電容量", "300µF x 3相", "")
+    insert_quotation_request({"mq_no": "MQ-2026-0002", "anken_id": "ANK-2026-0002", "request_date": "2026-06-06", "note": "初回見積依頼"})
+    insert_quotation_response({"mr_no": "MR-2026-0002", "anken_id": "ANK-2026-0002", "amount": 12000000, "delivery": "2026-10-10", "response_date": "2026-06-20", "material_cost": 8000000, "note": "標準仕様"})
 
-def get_anken(aid):
-    with get_conn() as conn:
-        r = conn.execute("SELECT * FROM ankens WHERE anken_id=?", (aid,)).fetchone()
-        return dict(r) if r else None
+    # ANK-2026-0003: 日立（見積依頼中）
+    insert_anken({
+        "anken_id": "ANK-2026-0003",
+        "anken_name": "PF盤向け高調波対策コンデンサ",
+        "customer_name": "日立製作所",
+        "product_name": "PF用コンデンサ",
+        "spec_no": "HPF-2026-022",
+        "drawing_no": "H7V3001012",
+        "quantity": 200,
+        "desired_delivery": "2026-11-30",
+        "sales_rep": "朝田 卓麿",
+        "registered_date": "2026-06-10",
+    })
+    insert_spec_extract("ANK-2026-0003", "仕様書番号", "HPF-2026-022", "")
+    insert_quotation_request({"mq_no": "MQ-2026-0003", "anken_id": "ANK-2026-0003", "request_date": "2026-06-11", "note": "初回見積依頼"})
 
 def next_anken_id():
-    with get_conn() as conn:
-        year = datetime.now().year
-        prefix = f"ANK-{year}-"
-        rows = conn.execute("SELECT anken_id FROM ankens WHERE anken_id LIKE ?", (prefix+"%",)).fetchall()
-        mx = 0
-        for r in rows:
-            try: mx = max(mx, int(r["anken_id"].split("-")[-1]))
-            except: pass
-        return f"{prefix}{mx+1:04d}"
+    year = datetime.now().year
+    prefix = f"ANK-{year}-"
+    existing = [k for k in st.session_state.ankens if k.startswith(prefix)]
+    nums = []
+    for k in existing:
+        try: nums.append(int(k.split("-")[-1]))
+        except: pass
+    mx = max(nums) if nums else 0
+    return f"{prefix}{mx+1:04d}"
+
+def insert_anken(d):
+    st.session_state.ankens[d["anken_id"]] = dict(d)
+
+def get_all_ankens():
+    return sorted(st.session_state.ankens.values(), key=lambda x: x["anken_id"])
+
+def get_anken(aid):
+    return st.session_state.ankens.get(aid)
 
 def insert_spec_extract(aid, item, value, note=""):
-    with get_conn() as conn:
-        conn.execute("INSERT INTO spec_extracts (anken_id, item, value, note) VALUES (?,?,?,?)",
-                     (aid, item, value, note))
+    st.session_state.spec_extracts.append({"anken_id": aid, "item": item, "value": value, "note": note})
 
 def get_spec_extracts(aid):
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM spec_extracts WHERE anken_id=?", (aid,)).fetchall()]
+    return [r for r in st.session_state.spec_extracts if r["anken_id"] == aid]
 
 def insert_quotation_request(d):
-    with get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO quotation_requests VALUES (:mq_no,:anken_id,:request_date,:note)", d)
+    st.session_state.quotation_requests[d["anken_id"]] = dict(d)
 
 def get_quotation_request_by_anken(aid):
-    with get_conn() as conn:
-        r = conn.execute("SELECT * FROM quotation_requests WHERE anken_id=?", (aid,)).fetchone()
-        return dict(r) if r else None
+    return st.session_state.quotation_requests.get(aid)
 
 def get_all_quotation_requests():
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM quotation_requests").fetchall()]
+    return list(st.session_state.quotation_requests.values())
 
 def insert_quotation_response(d):
-    with get_conn() as conn:
-        conn.execute("""INSERT OR REPLACE INTO quotation_responses VALUES
-            (:mr_no,:anken_id,:amount,:delivery,:response_date,:material_cost,:note)""", d)
+    st.session_state.quotation_responses[d["anken_id"]] = dict(d)
 
 def get_quotation_response_by_anken(aid):
-    with get_conn() as conn:
-        r = conn.execute("SELECT * FROM quotation_responses WHERE anken_id=?", (aid,)).fetchone()
-        return dict(r) if r else None
+    return st.session_state.quotation_responses.get(aid)
 
 def get_all_quotation_responses():
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM quotation_responses").fetchall()]
+    return list(st.session_state.quotation_responses.values())
 
 def insert_purchase_order(d):
-    with get_conn() as conn:
-        conn.execute("""INSERT OR REPLACE INTO purchase_orders VALUES
-            (:po_no,:anken_id,:customer_po_no,:quantity,:unit_price,:total,:delivery,:received_date,:note)""", d)
+    st.session_state.purchase_orders[d["anken_id"]] = dict(d)
 
 def get_purchase_order_by_anken(aid):
-    with get_conn() as conn:
-        r = conn.execute("SELECT * FROM purchase_orders WHERE anken_id=?", (aid,)).fetchone()
-        return dict(r) if r else None
+    return st.session_state.purchase_orders.get(aid)
 
 def get_all_purchase_orders():
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM purchase_orders").fetchall()]
+    return list(st.session_state.purchase_orders.values())
 
 def insert_manufacturing_order(d):
-    with get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO manufacturing_orders VALUES (:mo_no,:anken_id,:issued_date,:status)", d)
+    st.session_state.manufacturing_orders[d["anken_id"]] = dict(d)
 
 def get_manufacturing_order_by_anken(aid):
-    with get_conn() as conn:
-        r = conn.execute("SELECT * FROM manufacturing_orders WHERE anken_id=?", (aid,)).fetchone()
-        return dict(r) if r else None
+    return st.session_state.manufacturing_orders.get(aid)
 
 def get_all_manufacturing_orders():
-    with get_conn() as conn:
-        return [dict(r) for r in conn.execute("SELECT * FROM manufacturing_orders").fetchall()]
+    return list(st.session_state.manufacturing_orders.values())
 
 def get_dashboard_data():
     ankens = get_all_ankens()
@@ -135,28 +148,28 @@ def get_dashboard_data():
     for a in ankens:
         aid = a["anken_id"]
         spec = get_spec_extracts(aid)
-        mq = get_quotation_request_by_anken(aid)
-        mr = get_quotation_response_by_anken(aid)
-        po = get_purchase_order_by_anken(aid)
-        mo = get_manufacturing_order_by_anken(aid)
-        s1 = "OK" if spec else "-"
-        s2 = "OK" if mq else "-"
-        s3 = "OK" if (mr and mr.get("amount",0) > 0) else "-"
-        s4 = "OK" if (po and po.get("customer_po_no")) else "-"
-        s5 = "OK" if (mo and mo.get("status")=="発効") else "-"
-        if s1=="OK": result["spec_received"] += 1
-        if s2=="OK": result["quotation_requested"] += 1
-        if s4=="OK": result["ordered"] += 1
-        if s5=="OK": result["mo_issued"] += 1
-        if s5=="OK": status = "製作指令発効済"
-        elif s4=="OK": status = "受注済(指令待ち)"
-        elif s3=="OK": status = "見積回答済(受注待ち)"
-        elif s2=="OK": status = "見積依頼中"
-        elif s1=="OK": status = "仕様受領"
-        else: status = "新規"
+        mq   = get_quotation_request_by_anken(aid)
+        mr   = get_quotation_response_by_anken(aid)
+        po   = get_purchase_order_by_anken(aid)
+        mo   = get_manufacturing_order_by_anken(aid)
+        s1 = "✅" if spec else "-"
+        s2 = "✅" if mq   else "-"
+        s3 = "✅" if (mr and mr.get("amount", 0) > 0) else "-"
+        s4 = "✅" if (po and po.get("customer_po_no")) else "-"
+        s5 = "✅" if (mo and mo.get("status") == "発効") else "-"
+        if s1 == "✅": result["spec_received"]      += 1
+        if s2 == "✅": result["quotation_requested"] += 1
+        if s4 == "✅": result["ordered"]             += 1
+        if s5 == "✅": result["mo_issued"]           += 1
+        if   s5 == "✅": status = "🏭 製作指令発効済"
+        elif s4 == "✅": status = "📦 受注済(指令待ち)"
+        elif s3 == "✅": status = "💰 見積回答済(受注待ち)"
+        elif s2 == "✅": status = "📝 見積依頼中"
+        elif s1 == "✅": status = "📄 仕様受領"
+        else:            status = "🆕 新規"
         result["ankens"].append({
             "案件ID": aid, "顧客名": a["customer_name"], "製品": a["product_name"],
-            "①仕様受領": s1, "②見積依頼": s2, "③見積回答": s3,
+            "①仕様": s1, "②見積依頼": s2, "③見積回答": s3,
             "④受注": s4, "⑤製作指令": s5, "総合状態": status,
         })
     return result
